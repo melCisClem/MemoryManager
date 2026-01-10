@@ -1,17 +1,3 @@
-# Ignore Visual Studio files
-*.vcxproj*
-*.vcxproj.filters
-*.vcxproj.user
-*.user
-*.opensdf
-*.sdf
-*.VC.db
-*.VC.opendb
-*.dir/
-
-# Ignore log files
-*.log
-
 # Ignore temporary files
 *.tmp
 *.temp
