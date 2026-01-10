@@ -1,17 +1,4 @@
-# Ignore build directories
-build/
-Build/
-bin/
-Bin/
-!Solution/third_party/mono/bin
-# Ignore CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-
 # Ignore Visual Studio files
-*.sln
 *.vcxproj*
 *.vcxproj.filters
 *.vcxproj.user
@@ -21,47 +8,6 @@ Makefile
 *.VC.db
 *.VC.opendb
 *.dir/
-
-# Ignore Xcode files (macOS)
-*.xcworkspace/
-*.xcuserstate
-*.xcodeproj/
-*.xcuserdata/
-
-# Ignore Qt generated files
-moc_*.cpp
-moc_*.h
-qrc_*.cpp
-ui_*.h
-
-# Ignore macOS system files
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Thumbnails
-._*
-
-# Files that might appear in the root of a volume
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-
-# Directories potentially created on remote AFP share
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
-
-# Ignore Ubuntu system files
-*~
-\#*\#
-*.swp
-*.swo
 
 # Ignore log files
 *.log
