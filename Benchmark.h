@@ -64,7 +64,7 @@ public:
 
         // Test 4: Audio sources
         std::cout << "\nTest 4: Audio Source Pool (dynamic audio)\n";
-        testAudioSources(10000);
+        testAudioSources(100000);
 
         // Test 5: Level loading/unloading
         std::cout << "\nTest 5: Level Load/Unload (bulk operations)\n";
@@ -72,7 +72,7 @@ public:
 
         // Test 6: Mixed game loop
         std::cout << "\nTest 6: Realistic Game Loop (60 frames)\n";
-        testRealisticGameLoop(60);
+        testRealisticGameLoop(3600);
     }
 
 private:
@@ -266,10 +266,10 @@ private:
                     if (source) activeSources.push_back(source);
                 }
 
-                // Stop finished sounds
                 if (!activeSources.empty() && (i % 10 == 0)) {
                     allocator.deallocate(activeSources.front());
-                    activeSources.erase(activeSources.begin());
+                    activeSources.front() = activeSources.back();
+                    activeSources.pop_back();
                 }
             }
 
@@ -291,7 +291,8 @@ private:
 
                 if (!activeSources.empty() && (i % 10 == 0)) {
                     delete activeSources.front();
-                    activeSources.erase(activeSources.begin());
+                    activeSources.front() = activeSources.back();
+                    activeSources.pop_back();
                 }
             }
 
@@ -411,8 +412,8 @@ private:
                 // Kill old particles
                 if (particles.size() > 100) {
                     for (int i = 0; i < 30; i++) {
-                        allocator.deallocate(particles.front());
-                        particles.erase(particles.begin());
+                        allocator.deallocate(particles.back());
+                        particles.pop_back();
                     }
                 }
 
@@ -455,8 +456,8 @@ private:
 
                 if (particles.size() > 100) {
                     for (int i = 0; i < 30; i++) {
-                        delete particles.front();
-                        particles.erase(particles.begin());
+                        delete particles.back();
+                        particles.pop_back();
                     }
                 }
 

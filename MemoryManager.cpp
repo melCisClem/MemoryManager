@@ -67,14 +67,17 @@ namespace mem {
 
 	void MemoryManager::deallocate(void* obj)
 	{
+#ifdef _DEBUG
 		if (!obj)
 		{
 			std::cerr << "MemoryManger::deallocate error > invalid memory block ptr\n";
 			return;
 		}
+#endif
 
 		Block* block = (Block*)((char*)obj - HEADER_SIZE);
 
+#ifdef _DEBUG
 		if (!isValidBlock(block))
 		{
 			std::cerr << "MemoryManager::deallocate error > Invalid block\n";
@@ -86,6 +89,7 @@ namespace mem {
 			std::cerr << "MemoryManager::deallocate error > Double free detected\n";
 			return;
 		}
+#endif
 
 		block->isFree = true;
 		block->next = nullptr;
@@ -94,7 +98,7 @@ namespace mem {
 		footer->isFree = true;
 
 		stats.allocated -= block->size;
-		block = coalesce(block);
+
 		addToFreeList(block);
 	}
 
@@ -153,18 +157,22 @@ namespace mem {
 	{
 		int classIdx = getSizeClass(totalSize);
 
-		for (int i = classIdx; i < NUM_CLASSES; ++i)
-		{
-			Block* block = freeLists[i];
+		// if got exact size
+		if (freeLists[classIdx])
+			return freeLists[classIdx];
 
-			while (block)
-			{
-				if (block->size >= totalSize)
-					return block;
-				block = block->next;
-			}
-		}
-		return nullptr;
+		// find next largest block
+		for (int i = classIdx; i < NUM_CLASSES; ++i)
+			if (freeLists[i])
+				return freeLists[i];
+
+		defrag();
+
+		for (int i = classIdx; i < NUM_CLASSES; ++i)
+			if (freeLists[i])
+				return freeLists[i];
+
+		return nullptr; // out of memory
 	}
 
 	void MemoryManager::splitBlock(Block* block, size_t size)
@@ -195,6 +203,8 @@ namespace mem {
 
 	void MemoryManager::removeFromFreeList(Block* block)
 	{
+
+#ifdef _DEBUG
 		if(!block || !isValidBlock(block))
 		{
 			std::cerr << "MemoryManager::removeFromFreeList: Invalid block pointer!\n";
@@ -206,32 +216,17 @@ namespace mem {
 			std::cerr << "MemoryManager::removeFromFreeList: Block is not free!\n";
 			return;
 		}
+#endif
 
 		int classIdx = getSizeClass(block->size);
 
 		if (block->prev)
-		{
-			if (!isValidBlock(block->prev) || !block->prev->isFree)
-			{
-				std::cerr << "ERROR: Corrupted prev pointer!\n";
-				block->prev = nullptr;
-			}
-			else
-				block->prev->next = block->next;
-		}
+			block->prev->next = block->next;
 		else
 			freeLists[classIdx] = block->next;
 
 		if (block->next)
-		{
-			if (!isValidBlock(block->next) || !block->next->isFree)
-			{
-				std::cerr << "ERROR: Corrupted next pointer!\n";
-				block->next = nullptr;
-			}
-			else
-				block->next->prev = block->prev;
-		}
+			block->next->prev = block->prev;
 
 		block->next = nullptr;
 		block->prev = nullptr;
@@ -295,6 +290,36 @@ namespace mem {
 		footer->isFree = true;
 
 		return prev;
+	}
+
+	void MemoryManager::defrag(void)
+	{
+		Block* current = (Block*)poolStart;
+
+		while ((void*)current < poolEnd)
+		{
+			if (current->isFree)
+			{
+				while (true)
+				{
+					Block* next = getNextBlock(current);
+
+					if (!next || !next->isFree)
+						break;
+					
+					removeFromFreeList(current);
+					removeFromFreeList(next);
+
+					current->size += next->size;
+					BlockFooter* footer = getFooter(current, current->size);
+					footer->size = current->size;
+					footer->isFree = true;
+
+					addToFreeList(current);
+				}
+			}
+			current = (Block*)((char*)current + current->size);
+		}
 	}
 
 	BlockFooter* MemoryManager::getFooter(void* blockStart, size_t blockSize)

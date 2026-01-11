@@ -1,7 +1,7 @@
 #include "MemoryManager.h"
 #include "Benchmark.h"
 
-#define VERBOSE_TEST false;
+#define VERBOSE_TEST 0;
 
 int main(void)
 {
@@ -35,7 +35,11 @@ int main(void)
         allocator.deallocate(p3);
         allocator.deallocate(p4);
 
-        std::cout << "\n\nAfter freeing all:\n";
+        std::cout << "\n\nAfter freeing all (fragmented):\n";
+        allocator.printStats();
+
+        allocator.optimizeMemory();
+        std::cout << "\n\nAfter defragmentation:\n";
         allocator.printStats();
 #else
         GameEngineBenchmark::runAllTests();
