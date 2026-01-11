@@ -1,4 +1,5 @@
 #pragma once
+#pragma pack(1)
 #include <cstdlib>
 #include <exception>
 #include <iostream>
