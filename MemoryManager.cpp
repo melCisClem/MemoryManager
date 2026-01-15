@@ -11,7 +11,8 @@ namespace mem {
 
 		memset(freeLists, 0, sizeof(freeLists));
 
-		poolStart = malloc(stats.poolSize);
+		//poolStart = malloc(stats.poolSize);
+		poolStart = operator new(stats.poolSize);
 		if (!poolStart)
 			throw std::bad_alloc();
 		poolEnd = (char*)poolStart + stats.poolSize;
@@ -33,7 +34,8 @@ namespace mem {
 
 	MemoryManager::~MemoryManager(void)
 	{
-		free(poolStart);
+		//free(poolStart);
+		delete poolStart;
 	}
 
 	void* MemoryManager::allocate(size_t size)
