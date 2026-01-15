@@ -11,8 +11,7 @@ namespace mem {
 
 		memset(freeLists, 0, sizeof(freeLists));
 
-		//poolStart = malloc(stats.poolSize);
-		poolStart = operator new(stats.poolSize);
+		poolStart = malloc(stats.poolSize);
 		if (!poolStart)
 			throw std::bad_alloc();
 		poolEnd = (char*)poolStart + stats.poolSize;
@@ -34,8 +33,7 @@ namespace mem {
 
 	MemoryManager::~MemoryManager(void)
 	{
-		//free(poolStart);
-		delete poolStart;
+		free(poolStart);
 	}
 
 	void* MemoryManager::allocate(size_t size)
@@ -72,8 +70,8 @@ namespace mem {
 #ifdef _DEBUG
 		if (!obj)
 		{
-			std::cerr << "MemoryManger::deallocate error > invalid memory block ptr\n";
-			return;
+			std::cerr << "MemoryAllocator::deallocate error > invalid memory block ptr\n";
+			throw std::bad_alloc{};
 		}
 #endif
 
@@ -82,14 +80,14 @@ namespace mem {
 #ifdef _DEBUG
 		if (!isValidBlock(block))
 		{
-			std::cerr << "MemoryManager::deallocate error > Invalid block\n";
-			return;
+			std::cerr << "MemoryAllocator::deallocate error > Invalid block\n";
+			throw std::bad_alloc{};
 		}
 
 		if (block->isFree)
 		{
-			std::cerr << "MemoryManager::deallocate error > Double free detected\n";
-			return;
+			std::cerr << "MemoryAllocator::deallocate error > Double free detected, memory block size " << block->size;
+			throw std::bad_alloc{};
 		}
 #endif
 
