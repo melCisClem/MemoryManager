@@ -742,6 +742,10 @@ namespace mem {
 			return nullptr;
 
 		void* poolStart = pools[poolIdx].start;
+
+		// this for first block in pool to not trigger error msg as it will always exist before pool
+		if ((void*)block == poolStart)
+			return nullptr;
 		if ((void*)block <= poolStart)
 		{
 #ifdef _DEBUG
