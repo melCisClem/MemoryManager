@@ -191,10 +191,14 @@ namespace mem {
 	{
 		if (poolCnt >= maxPools)
 		{
+			size_t reclaimed = reclaimUnusedPools();
+			if (reclaimed == 0)
+			{
 #ifdef _DEBUG
-			std::cerr << "MemoryAllocator::extendPool error > Maximum pool limit (" << maxPools << ") reached\n";
+				std::cerr << "MemoryAllocator::extendPool error > Maximum pool limit (" << maxPools << ") reached\n";
 #endif
-			return false;
+				return false;
+			}
 		}
 		size_t newPoolSize;
 		if (additionalSize > 0)
