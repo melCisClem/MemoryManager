@@ -223,14 +223,6 @@ namespace mem {
 		stats.totalDeallocations++;
 
 		addToFreeList(block);
-
-		// auto shrink (if have >1 pool and low utilization)
-		if (poolCnt > 1 && stats.totalPoolSize > stats.poolSize) 
-		{
-			double utilization = (static_cast<double>(stats.allocated) / stats.totalPoolSize) * 100.0;
-			if (utilization < 10.0)
-				reclaimUnusedPools();
-		}
 	}
 
 	void MemoryAllocator::poolSize(size_t size)
@@ -319,8 +311,6 @@ namespace mem {
 		size_t reclaimedTotal = 0;
 		int reclaimedPoolCount = 0;
 
-		// 1. Identify which extension pools are completely empty
-		// We skip Pool 0 (initial pool)
 		bool poolMarkedForDeletion[MAX_POOLS] = { false };
 		for (int i = 1; i < poolCnt; ++i)
 		{
@@ -347,8 +337,6 @@ namespace mem {
 			}
 		}
 
-		// 2. Clean ALL Free Lists of pointers pointing into marked pools
-		// This prevents dangling pointers in segregated lists
 		for (int classIdx = 0; classIdx < NUM_CLASSES; ++classIdx)
 		{
 			Block** currPtr = &freeLists[classIdx];
@@ -368,8 +356,6 @@ namespace mem {
 			}
 		}
 
-		// 3. Physically free the memory without shifting the array
-		// Keeping the array index stable preserves the integrity of Block::poolIdx
 		for (int i = 1; i < poolCnt; ++i)
 		{
 			if (poolMarkedForDeletion[i])
@@ -703,9 +689,20 @@ namespace mem {
 
 	bool MemoryAllocator::isValidBlock(void* ptr)
 	{
-		for (int i = 0; i < poolCnt; ++i)
-			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end)
+		if (!ptr) return false;
+
+		Block* block = (Block*)ptr;
+		int hintIdx = block->poolIdx;
+
+		if (hintIdx >= 0 && hintIdx < poolCnt && pools[hintIdx].isActive) 
+			if (ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
 				return true;
+
+		// fallback: search all pools
+		for (int i = 0; i < poolCnt; ++i) 
+			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end) 
+				return true;
+
 		return false;
 	}
 
@@ -718,9 +715,19 @@ namespace mem {
 #endif
 			return -1;
 		}
+		Block* block = (Block*)((char*)ptr - (HEADER_SIZE + 7 & ~7));
+		int hintIdx = block->poolIdx;
+
+		// direct check (O(1))
+		if (hintIdx >= 0 && hintIdx < poolCnt && pools[hintIdx].isActive)
+			if (ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
+				return hintIdx;
+
+		// fallback: search all pools (O(n))
 		for (int i = 0; i < poolCnt; ++i)
 			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end)
 				return i;
+
 		return -1;
 	}
 }
