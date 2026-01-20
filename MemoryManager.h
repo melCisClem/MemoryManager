@@ -27,10 +27,9 @@ namespace mem {
 
 	struct Block {
 		size_t size;
-		bool isFree;
 		Block* next;
-		Block* prev;
 		int poolIdx; // to see which pool it belongs
+		bool isFree;
 	};
 
 	struct BlockFooter {
@@ -53,7 +52,7 @@ namespace mem {
 		};
 
 		size_t poolSize;
-		size_t allocated;
+		size_t allocated; // bytes
 		size_t freeBytes;
 		size_t totalAllocations;
 		size_t totalDeallocations;
@@ -65,14 +64,13 @@ namespace mem {
 	// segregated free list
 	class MemoryAllocator {
 	private:
-		// Size Classes: 64, 128, 256, 512, 1024, 2048, 4096, 8192+ btyes
-		static const int NUM_CLASSES = 8;
-		static const size_t MIN_BLOCK_SIZE = 64;
-		static const size_t MAX_BLOCK_SIZE = 8192;
+		static const int NUM_CLASSES = 16;
+		static const size_t MIN_BLOCK_SIZE = 64; // this cannot be less than overhead (40bytes)
+		static const size_t MAX_BLOCK_SIZE = 26214400; // 25mb
 		static const size_t HEADER_SIZE = sizeof(Block);
 		static const size_t FOOTER_SIZE = sizeof(BlockFooter);
 		static const size_t OVERHEAD = HEADER_SIZE + FOOTER_SIZE;
-		static const int MAX_POOLS = 32;
+		static const int MAX_POOLS = 128;
 
 	public:
 		MemoryAllocator(size_t requestedSize);
@@ -82,9 +80,10 @@ namespace mem {
 
 		static MemoryAllocator& GetInstance();
 
+		void initializeSegregatedLists(void* poolStart, size_t poolSize, int poolIdx);
+
 		void* allocate(size_t size);
 		void deallocate(void* obj);
-		void optimizeMemory() { defrag(); }
 
 		void poolSize(size_t); // to modify pool size
 		void setAutoExtender(bool enable) { autoExtend = enable; }
@@ -103,15 +102,11 @@ namespace mem {
 		int getSizeClass(size_t size);
 		size_t getClassSize(int classIdx);
 		Block* findBlock(size_t totalSize);
-		void splitBlock(Block* block, size_t size);
 
 		void removeFromFreeList(Block* block);
 		void addToFreeList(Block* block);
-		Block* coalesce(Block* block);
-		void defrag(void);
 
 		BlockFooter* getFooter(void* blockStart, size_t blockSize);
-		Block* getPrevBlock(Block* block);
 		Block* getNextBlock(Block* block);
 		bool isValidBlock(void* ptr);
 		int getPoolIndex(void* ptr);

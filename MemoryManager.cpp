@@ -1,4 +1,4 @@
-#include "memoryManager.h"
+#include "MemoryManager.h"
 #include <exception>
 #include <iostream>
 #include <cstdlib>
@@ -13,8 +13,9 @@ size_t getAvailableMemory()
 	status.dwLength = sizeof(status);
 	GlobalMemoryStatusEx(&status);
 	return static_cast<size_t>(status.ullAvailPhys);
-#endif
+#else
 	return 0;
+#endif
 }
 
 namespace mem {
@@ -28,12 +29,11 @@ namespace mem {
 		if (requestedSize > 0)
 			defaultPoolSize = requestedSize;
 		else
-			defaultPoolSize = static_cast<size_t>(availableMem * 0.0001); // 0.01% of available system ram
+			defaultPoolSize = static_cast<size_t>(availableMem * 0.00001); // 0.00001% of available system ram
 
 		size_t minPoolSize = 100 * 1024 * 1024; // 100 MB
-		size_t maxPoolSize = 4ULL * 1024 * 1024; // 4 GB
 
-		stats.poolSize = std::max(minPoolSize, std::min(defaultPoolSize, maxPoolSize));
+		stats.poolSize = std::max(minPoolSize, defaultPoolSize);
 		stats.totalPoolSize = stats.poolSize;
 
 		memset(freeLists, 0, sizeof(freeLists));
@@ -49,20 +49,7 @@ namespace mem {
 		pools[0].isActive = true;
 		poolCnt = 1;
 
-		// init entire pool as 1 large free block
-		Block* initialBlock = (Block*)poolStart;
-		initialBlock->size = stats.poolSize;
-		initialBlock->isFree = true;
-		initialBlock->next = nullptr;
-		initialBlock->prev = nullptr;
-		initialBlock->poolIdx = 0;
-
-		BlockFooter* footer = getFooter(initialBlock, stats.poolSize);
-		footer->size = stats.poolSize;
-		footer->isFree = true;
-
-		int classIdx = getSizeClass(stats.poolSize);
-		freeLists[classIdx] = initialBlock;
+		initializeSegregatedLists(poolStart, stats.poolSize, 0);
 	}
 
 	MemoryAllocator::~MemoryAllocator(void)
@@ -72,9 +59,17 @@ namespace mem {
 #endif
 		checkForLeaks();
 
+		for (int i = 0; i < NUM_CLASSES; ++i)
+			freeLists[i] = nullptr;
+
 		for (int i = 0; i < poolCnt; ++i)
 			if (pools[i].isActive)
+			{
 				free(pools[i].start);
+				pools[i].isActive = false;
+				pools[i].start = nullptr;
+				pools[i].end = nullptr;
+			}
 	}
 
 	MemoryAllocator& MemoryAllocator::GetInstance()
@@ -83,6 +78,62 @@ namespace mem {
 		return instance;
 	}
 
+	// cutting the free list up
+	void MemoryAllocator::initializeSegregatedLists(void* poolStart, size_t poolSize, int poolIdx)
+	{
+		char* curr = (char*)poolStart;
+		char* poolEnd = (char*)poolStart + poolSize;
+
+		for (int classIdx = 0; classIdx < 12; ++classIdx)
+		{
+			size_t blockSize = getClassSize(classIdx);
+			int numBlocks = (classIdx < 6) ? 100 : 20;
+
+			for (int i = 0; i < numBlocks && (curr + blockSize) <= poolEnd; ++i)
+			{
+				Block* block = (Block*)curr;
+				block->size = blockSize;
+				block->isFree = true;
+				block->poolIdx = poolIdx;
+				addToFreeList(block);
+				curr += blockSize;
+			}
+		}
+
+		// Carve ALL remaining space into largest blocks
+		size_t largestSize = getClassSize(NUM_CLASSES - 1);
+		while ((curr + largestSize) <= poolEnd) {
+			Block* block = (Block*)curr;
+			block->size = largestSize;
+			block->isFree = true;
+			block->poolIdx = poolIdx;
+
+			getFooter(block, largestSize)->size = largestSize;
+			getFooter(block, largestSize)->isFree = true;
+
+			addToFreeList(block);
+			curr += largestSize;
+		}
+
+		// handle remaining space
+		size_t remaining = (char*)poolEnd - curr;
+		if (remaining >= MIN_BLOCK_SIZE)
+		{
+			Block* block = (Block*)curr;
+			block->size = remaining;
+			block->isFree = true;
+			block->poolIdx = poolIdx;
+			block->next = nullptr;
+
+			BlockFooter* footer = getFooter(block, remaining);
+			footer->size = remaining;
+			footer->isFree = true;
+
+			addToFreeList(block);
+		}
+		else if (remaining > 0)
+			memset(curr, 0, remaining);
+	}
 
 	void* MemoryAllocator::allocate(size_t size)
 	{
@@ -94,37 +145,30 @@ namespace mem {
 			throw std::bad_alloc{};
 		}
 
-		size_t totalSize = size + OVERHEAD;
-		totalSize = (totalSize + 7) & ~7; // 8byte alignment
+		size_t alignedHeaderSize = (HEADER_SIZE + 7) & ~7;
+		size_t alignedFooterSize = (FOOTER_SIZE + 7) & ~7;
 
-		if (totalSize < MIN_BLOCK_SIZE)
-			totalSize = MIN_BLOCK_SIZE;
+		size_t totalRequired = size + alignedHeaderSize + alignedFooterSize;
+		totalRequired = (totalRequired + 7) & ~7; // 8-byte block alignment
 
-		Block* block = findBlock(totalSize);
+		Block* block = findBlock(totalRequired);
 		if (!block && autoExtend)
 		{
 #ifdef _DEBUG
 			std::cout << "No block found. Attempting to extend pool...\n";
 #endif
-			size_t extendSize = totalSize * 2;
-			size_t quarterPool = stats.poolSize / 4;
-			if (extendSize < quarterPool) // add overhead
-				extendSize = quarterPool;
-
-			if (extendPool(extendSize))
-				block = findBlock(totalSize);
+			if (extendPool(totalRequired > extensionSize ? totalRequired : 0))
+				block = findBlock(totalRequired);
 		}
 		if (!block)
 		{
 #ifdef _DEBUG
-			std::cerr << "MemoryAllocator::allocate error > Allocation of " << totalSize << " bytes failed. Out of memory.\n";
+			std::cerr << "MemoryAllocator::allocate error > Allocation of " << size << " bytes failed. Out of memory.\n";
 #endif
 			throw std::bad_alloc{};
 		}
-		removeFromFreeList(block);
-
-		if (block->size >= totalSize + MIN_BLOCK_SIZE)
-			splitBlock(block, totalSize);
+		if (block->isFree)
+			removeFromFreeList(block);
 
 		block->isFree = false;
 		BlockFooter* footer = getFooter(block, block->size);
@@ -134,10 +178,11 @@ namespace mem {
 		stats.totalAllocations++;
 
 #ifdef _DEBUG
-		std::cout << "Memory Manager: Allocated:" << totalSize << " bytes of memory\n";
+		std::cout << "Memory Manager: Allocated:" << block->size << " bytes (requested: "
+			<< totalSize << ", wasted: " << (block->size - totalSize) << ")\n";
 #endif
 
-		return (char*)block + HEADER_SIZE;
+		return (char*)block + alignedHeaderSize;
 	}
 
 	void MemoryAllocator::deallocate(void* obj)
@@ -150,8 +195,8 @@ namespace mem {
 			throw std::bad_alloc{};
 		}
 
-		Block* block = (Block*)((char*)obj - HEADER_SIZE);
-
+		size_t alignedHeaderSize = (HEADER_SIZE + 7) & ~7;
+		Block* block = (Block*)((char*)obj - alignedHeaderSize);
 		if (!isValidBlock(block))
 		{
 #ifdef _DEBUG
@@ -170,14 +215,12 @@ namespace mem {
 
 		block->isFree = true;
 		block->next = nullptr;
-		block->prev = nullptr;
+
 		BlockFooter* footer = getFooter(block, block->size);
 		footer->isFree = true;
 
 		stats.allocated -= block->size;
 		stats.totalDeallocations++;
-
-		block = coalesce(block);
 
 		addToFreeList(block);
 	}
@@ -200,11 +243,15 @@ namespace mem {
 				return false;
 			}
 		}
+		
+		size_t largestBlock = getClassSize(NUM_CLASSES - 1);
 		size_t newPoolSize;
+
 		if (additionalSize > 0)
-			newPoolSize = additionalSize;
-		else if (extensionSize > 0)
-			newPoolSize = extensionSize;
+		{
+			size_t buffer = 15 * 1024 * 1024; 
+			newPoolSize = additionalSize + buffer + (OVERHEAD * 100);
+		}
 		else
 		{
 			// extend by 50% of current pool size
@@ -223,26 +270,31 @@ namespace mem {
 #endif
 			return false;
 		}
-		int newPoolIdx = poolCnt;
+
+		int newPoolIdx = -1;
+		for (int i = 0; i < poolCnt; ++i) 
+		{
+			if (!pools[i].isActive)
+			{
+				newPoolIdx = i;
+				break;
+			}
+		}
+
+		if (newPoolIdx == -1) 
+		{
+			if (poolCnt < maxPools) 
+				newPoolIdx = poolCnt++;
+			else return false;
+		}
+
 		pools[newPoolIdx].start = newPool;
 		pools[newPoolIdx].end = (char*)newPool + newPoolSize;
 		pools[newPoolIdx].size = newPoolSize;
 		pools[newPoolIdx].isExtension = true;
 		pools[newPoolIdx].isActive = true;
-		poolCnt++;
 
-		Block* newBlock = (Block*)newPool;
-		newBlock->size = newPoolSize;
-		newBlock->isFree = true;
-		newBlock->next = nullptr;
-		newBlock->prev = nullptr;
-		newBlock->poolIdx = newPoolIdx;
-
-		BlockFooter* footer = getFooter(newBlock, newPoolSize);
-		footer->size = newPoolSize;
-		footer->isFree = true;
-
-		addToFreeList(newBlock);
+		initializeSegregatedLists(newPool, newPoolSize, newPoolIdx);
 
 		stats.totalPoolSize += newPoolSize;
 		stats.extensionCount++;
@@ -256,108 +308,83 @@ namespace mem {
 
 	size_t MemoryAllocator::reclaimUnusedPools()
 	{
-		size_t reclaimed = 0;
-		int reclaimedCnt = 0;
+		size_t reclaimedTotal = 0;
+		int reclaimedPoolCount = 0;
 
-		// last pool to pool 1 (skip pool 0)
-		for (int i = poolCnt - 1; i >= 0; --i)
+		// 1. Identify which extension pools are completely empty
+		// We skip Pool 0 (initial pool)
+		bool poolMarkedForDeletion[MAX_POOLS] = { false };
+		for (int i = 1; i < poolCnt; ++i)
 		{
-			if (!pools[i].isActive || !pools[i].isExtension)
-				continue;
-
-			bool poolIsEmpty = true;
-			Block* current = (Block*)pools[i].start;
-			void* poolEnd = pools[i].end;
-
-			while((void*)current < poolEnd)
+			if (pools[i].isActive && pools[i].isExtension)
 			{
-				if (!current->isFree)
+				bool poolIsEmpty = true;
+				char* curr = (char*)pools[i].start;
+
+				while (curr < (char*)pools[i].end)
 				{
-					poolIsEmpty = false;
-					break;
-				}
-
-				if (current->size == 0 || current->size > pools[i].size)
-					break;
-
-				current = (Block*)((char*)current + current->size);
-			}
-
-			if (poolIsEmpty)
-			{
-				current = (Block*)pools[i].start;
-				while ((void*)current < poolEnd)
-				{
-					if(current->isFree)
-						removeFromFreeList(current);
-
-					if (current->size == 0 || current->size > pools[i].size)
+					Block* block = (Block*)curr;
+					if (!block->isFree)
+					{
+						poolIsEmpty = false;
 						break;
-
-					current = (Block*)((char*)current + current->size);
+					}
+					curr += block->size;
 				}
 
-				size_t poolSize = pools[i].size;
+				if (poolIsEmpty)
+				{
+					poolMarkedForDeletion[i] = true;
+				}
+			}
+		}
+
+		// 2. Clean ALL Free Lists of pointers pointing into marked pools
+		// This prevents dangling pointers in segregated lists
+		for (int classIdx = 0; classIdx < NUM_CLASSES; ++classIdx)
+		{
+			Block** currPtr = &freeLists[classIdx];
+			while (*currPtr)
+			{
+				Block* block = *currPtr;
+				int pIdx = getPoolIndex(block);
+
+				if (pIdx != -1 && poolMarkedForDeletion[pIdx])
+				{
+					*currPtr = block->next;
+				}
+				else
+				{
+					currPtr = &(block->next);
+				}
+			}
+		}
+
+		// 3. Physically free the memory without shifting the array
+		// Keeping the array index stable preserves the integrity of Block::poolIdx
+		for (int i = 1; i < poolCnt; ++i)
+		{
+			if (poolMarkedForDeletion[i])
+			{
+				reclaimedTotal += pools[i].size;
+				reclaimedPoolCount++;
+
 				free(pools[i].start);
-
-				reclaimed += pools[i].size;
-				reclaimedCnt++;
-
 				pools[i].isActive = false;
 				pools[i].start = nullptr;
 				pools[i].end = nullptr;
-				pools[i].size = 0;
-
-				stats.totalPoolSize -= poolSize;
-
-#ifdef _DEBUG
-				std::cout << "Reclaimed pool " << i << " (" << reclaimed << " bytes)\n";
-#endif
 			}
 		}
 
-		// Compact pool array (skip pool 0)
-		int writeIdx = 1;
-		for (int readIdx = 1; readIdx < poolCnt; ++readIdx)
-		{
-			if (pools[readIdx].isActive)
-			{
-				if (writeIdx != readIdx)
-				{
-					pools[writeIdx] = pools[readIdx];
-
-					Block* current = (Block*)pools[writeIdx].start;
-					void* poolEnd = pools[writeIdx].end;
-					while ((void*)current < poolEnd)
-					{
-						current->poolIdx = writeIdx;
-
-						if (current->size == 0 || current->size > pools[writeIdx].size)
-							break;
-						current = (Block*)((char*)current + current->size);
-					}
-				}
-				writeIdx++;
-			}
-		}
-
-		// clear remaining pools
-		for (int i = writeIdx; i < poolCnt; ++i)
-		{
-			pools[i].isActive = false;
-			pools[i].start = nullptr;
-			pools[i].end = nullptr;
-			pools[i].size = 0;
-		}
-		poolCnt = writeIdx;
-
-		stats.activeExtensions -= reclaimedCnt;
+		stats.totalPoolSize -= reclaimedTotal;
+		stats.activeExtensions -= reclaimedPoolCount;
 
 #ifdef _DEBUG
-		if (reclaimed > 0)
-			std::cout << "Reclaimed " << reclaimedCnt << " pools (" << reclaimed << " bytes total)\n";
+		if (reclaimedTotal > 0)
+			std::cout << "Reclaimed " << reclaimedPoolCount << " pools (" << reclaimedTotal << " bytes total)\n";
 #endif
-		return reclaimed;
+
+		return reclaimedTotal;
 	}
 
 	size_t MemoryAllocator::getReclaimableMemory() const
@@ -376,7 +403,7 @@ namespace mem {
 
 			while ((void*)current < poolEnd)
 			{
-				if (!current->isFree)
+				if (current->size == 0 || !current->isFree) 
 				{
 					poolIsEmpty = false;
 					break;
@@ -398,7 +425,7 @@ namespace mem {
 		int cnt = 0;
 
 		// skip initial pool 0
-		for(int i = 1; i < poolCnt; ++i)
+		for (int i = 1; i < poolCnt; ++i)
 		{
 			if (!pools[i].isActive || !pools[i].isExtension)
 				continue;
@@ -409,7 +436,7 @@ namespace mem {
 
 			while ((void*)current < poolEnd)
 			{
-				if (!current->isFree)
+				if (current->size == 0 || !current->isFree)
 				{
 					poolIsEmpty = false;
 					break;
@@ -449,7 +476,7 @@ namespace mem {
 
 		size_t reclaimable = getReclaimableMemory();
 		int reclaimablePools = getReclaimablePoolCount();
-		if(reclaimable > 0)
+		if (reclaimable > 0)
 			std::cout << "  Reclaimable memory: " << reclaimable << " bytes in " << reclaimablePools << " pools\n";
 
 		std::cout << "\nPool Details:\n";
@@ -467,6 +494,11 @@ namespace mem {
 			Block* curr = freeLists[i];
 
 			while (curr) {
+				if (!isValidBlock(curr))
+				{
+					std::cerr << "Memory Allocator WARNING: Invalid block in free list " << i << " at " << curr << "\n";
+					break;
+				}
 				count++;
 				totalFree += curr->size;
 				curr = curr->next;
@@ -503,12 +535,19 @@ namespace mem {
 
 				while ((void*)current < poolEnd)
 				{
+					if (current->size == 0)
+					{
+						std::cerr << "  ERROR: Corrupt block header (size 0) at " << current << ". Terminating pool scan\n";
+						break;
+					}
+
 					if (!current->isFree)
 					{
 						leakCount++;
 						std::cerr << "  Leaked block #" << leakCount << " (Pool " << poolIdx << "):"
 							<< current->size << " bytes at " << current << "\n";
 					}
+
 					current = (Block*)((char*)current + current->size);
 				}
 			}
@@ -527,7 +566,14 @@ namespace mem {
 		if (size <= 1024) return 4;
 		if (size <= 2048) return 5;
 		if (size <= 4096) return 6;
-		return 7;
+		if (size <= 8192) return 7;
+		if (size <= 16384) return 8;
+		if (size <= 32768) return 9;
+		if (size <= 65536) return 10;
+		if (size <= 131072) return 11; // 128KB
+		if (size <= 1048576) return 12; // 1MB
+		if (size <= 10485760) return 13; // 10MB
+		return 14; // 25MB
 	}
 
 	size_t MemoryAllocator::getClassSize(int classIdx)
@@ -539,62 +585,28 @@ namespace mem {
 		if (classIdx == 4) return 1024;
 		if (classIdx == 5) return 2048;
 		if (classIdx == 6) return 4096;
-		return 8192;
+		if (classIdx == 7) return 8192;
+		if (classIdx == 8) return 16384;
+		if (classIdx == 9) return 32768;
+		if (classIdx == 10) return 65536;
+		if (classIdx == 11) return 131072; // 128KB
+		if (classIdx == 12) return 1048576; // 1MB
+		if (classIdx == 13) return 10485760; // 10MB
+		return 26214400; // 25MB
 	}
 
 	Block* MemoryAllocator::findBlock(size_t totalSize)
 	{
-		try
-		{
-			int classIdx = getSizeClass(totalSize);
+		int classIdx = getSizeClass(totalSize);
 
-			// if got exact size
-			if (freeLists[classIdx])
-				return freeLists[classIdx];
-
-			// find next largest block
-			for (int i = classIdx; i < NUM_CLASSES; ++i)
-				if (freeLists[i])
-					return freeLists[i];
-
-			defrag(); // defrag n try agn
-			for (int i = classIdx; i < NUM_CLASSES; ++i)
-				if (freeLists[i])
-					return freeLists[i];
+		for (int i = classIdx; i < NUM_CLASSES; ++i) {
+			if (freeLists[i]) {
+				Block* block = freeLists[i];
+				if (block->size >= totalSize)
+					return block;
+			}
 		}
-		catch (std::exception const& e)
-		{
-			std::cerr << "MemoryAllocator::findblock error > Out of memory" << e.what() << std::endl;
-			throw std::bad_alloc{};
-		}
-		return nullptr; // to remove warning
-	}
-
-	void MemoryAllocator::splitBlock(Block* block, size_t size)
-	{
-		size_t remainingSize = block->size - size;
-
-		if (remainingSize >= MIN_BLOCK_SIZE)
-		{
-			// resize current block
-			block->size = size;
-			BlockFooter* footer = getFooter(block, block->size);
-			footer->size = size;
-
-			// create new free block from remainingSize 
-			Block* newBlock = (Block*)((char*)block + size);
-			newBlock->size = remainingSize;
-			newBlock->isFree = true;
-			newBlock->next = nullptr;
-			newBlock->prev = nullptr;
-			newBlock->poolIdx = block->poolIdx;
-
-			BlockFooter* newFooter = getFooter(newBlock, newBlock->size);
-			newFooter->size = remainingSize;
-			newFooter->isFree = true;
-
-			addToFreeList(newBlock);
-		}
+		return nullptr;
 	}
 
 	void MemoryAllocator::removeFromFreeList(Block* block)
@@ -617,165 +629,53 @@ namespace mem {
 
 		int classIdx = getSizeClass(block->size);
 
-		if (block->prev)
-			block->prev->next = block->next;
-		else
+		if (freeLists[classIdx] == block) // if head
+		{
 			freeLists[classIdx] = block->next;
+			block->next = nullptr;
+			return;
+		}
 
-		if (block->next)
-			block->next->prev = block->prev;
+		// else find prev node
+		Block* prev = freeLists[classIdx];
+		Block* curr = prev ? prev->next : nullptr;
 
-		block->next = nullptr;
-		block->prev = nullptr;
+		while (curr)
+		{
+			if (curr == block)
+			{
+				prev->next = curr->next;
+				block->next = nullptr;
+				return;
+			}
+			prev = curr;
+			curr = curr->next;
+		}
+
+#ifdef _DEBUG
+		std::cerr << "MemoryAllocator::removeFromFreeList: Block not found in free list!\n";
+#endif
+		throw std::bad_alloc{};
 	}
 
 	void MemoryAllocator::addToFreeList(Block* block)
 	{
+		if (!block || !isValidBlock(block))
+		{
+#ifdef _DEBUG
+			std::cerr << "MemoryAllocator::addToFreeList: Invalid block!\n";
+#endif
+			return;
+		}
+
 		int classIdx = getSizeClass(block->size);
-
-		block->prev = nullptr;
 		block->next = freeLists[classIdx];
-
-		if (freeLists[classIdx])
-			freeLists[classIdx]->prev = block;
-
 		freeLists[classIdx] = block;
-	}
-
-	Block* MemoryAllocator::coalesce(Block* block)
-	{
-		Block* prev = getPrevBlock(block);
-		Block* next = getNextBlock(block);
-
-		bool prevFree = prev && prev->isFree && (prev->poolIdx == block->poolIdx);
-		bool nextFree = next && next->isFree && (next->poolIdx == block->poolIdx);
-
-		if (!prevFree && !nextFree)
-			return block;
-
-		if (!prevFree && nextFree)
-		{
-			removeFromFreeList(next);
-
-			block->size += next->size;
-			BlockFooter* footer = getFooter(block, block->size);
-			footer->size = block->size;
-			footer->isFree = true;
-
-			return block;
-		}
-
-		if (prevFree && !nextFree)
-		{
-			removeFromFreeList(prev);
-
-			prev->size += block->size;
-			BlockFooter* footer = getFooter(prev, prev->size);
-			footer->size = prev->size;
-			footer->isFree = true;
-
-			return prev;
-		}
-
-		// both free
-		removeFromFreeList(prev);
-		removeFromFreeList(next);
-
-		prev->size += block->size + next->size;
-		BlockFooter* footer = getFooter(prev, prev->size);
-		footer->size = prev->size;
-		footer->isFree = true;
-
-		return prev;
-	}
-
-	void MemoryAllocator::defrag(void)
-	{
-		for (int poolIdx = 0; poolIdx < poolCnt; ++poolIdx)
-		{
-			if (!pools[poolIdx].isActive)
-				continue;
-
-			Block* current = (Block*)pools[poolIdx].start;
-			void* poolEnd = pools[poolIdx].end;
-
-			while ((void*)current < poolEnd)
-			{
-				if (current->isFree)
-				{
-					bool merged = false;
-					while (true)
-					{
-						Block* next = getNextBlock(current);
-
-						// if same pool only
-						if (!next || !next->isFree || next->poolIdx != current->poolIdx)
-							break;
-
-						if (!merged)
-						{
-							removeFromFreeList(current);
-							merged = true;
-						}
-						removeFromFreeList(next);
-
-						current->size += next->size;
-						BlockFooter* footer = getFooter(current, current->size);
-						footer->size = current->size;
-						footer->isFree = true;
-					}
-					if (merged)
-						addToFreeList(current);
-				}
-				current = (Block*)((char*)current + current->size);
-			}
-		}
-
-
 	}
 
 	BlockFooter* MemoryAllocator::getFooter(void* blockStart, size_t blockSize)
 	{
 		return (BlockFooter*)((char*)blockStart + blockSize - FOOTER_SIZE);
-	}
-
-	Block* MemoryAllocator::getPrevBlock(Block* block)
-	{
-		int poolIdx = getPoolIndex(block);
-		if (poolIdx < 0 || !pools[poolIdx].isActive)
-			return nullptr;
-
-		void* poolStart = pools[poolIdx].start;
-
-		// this for first block in pool to not trigger error msg as it will always exist before pool
-		if ((void*)block == poolStart)
-			return nullptr;
-		if ((void*)block <= poolStart)
-		{
-#ifdef _DEBUG
-			std::cerr << "MemoryAllocator::getPrevBlock error > block exist before memory pool start address\n";
-#endif
-			return nullptr;
-		}
-
-		BlockFooter* prevFooter = (BlockFooter*)((char*)block - FOOTER_SIZE);
-		if (!isValidBlock(prevFooter))
-		{
-#ifdef _DEBUG
-			std::cerr << "MemoryAllocator::getPrevBlock error > previous memory footer is invalid\n";
-#endif
-			return nullptr;
-		}
-
-		Block* prevBlock = (Block*)((char*)block - prevFooter->size);
-		if (!isValidBlock(prevBlock))
-		{
-#ifdef _DEBUG
-			std::cerr << "MemoryAllocator::getPrevBlock error > previous memory block is invalid\n";
-#endif
-			return nullptr;
-		}
-		return prevBlock;
 	}
 
 	Block* MemoryAllocator::getNextBlock(Block* block)
@@ -799,7 +699,7 @@ namespace mem {
 		return false;
 	}
 
-	int mem::MemoryAllocator::getPoolIndex(void* ptr)
+	int MemoryAllocator::getPoolIndex(void* ptr)
 	{
 		if (!ptr)
 		{

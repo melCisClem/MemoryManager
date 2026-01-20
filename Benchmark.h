@@ -38,10 +38,6 @@ namespace mem {
             MemoryAllocator::GetInstance().deallocate(ptr);
         }
 
-        void optimizeMemory() {
-            MemoryAllocator::GetInstance().optimizeMemory();
-        }
-
         void printStats() {
             MemoryAllocator::GetInstance().printStats();
         }

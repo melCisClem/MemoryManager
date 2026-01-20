@@ -398,7 +398,6 @@ void runVerboseTest() {
     std::cout << "\nAfter freeing all (fragmented):\n";
     allocator.printStats();
 
-    allocator.optimizeMemory();
     std::cout << "\nAfter defragmentation:\n";
     allocator.printStats();
 }
