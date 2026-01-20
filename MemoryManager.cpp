@@ -223,6 +223,14 @@ namespace mem {
 		stats.totalDeallocations++;
 
 		addToFreeList(block);
+
+		// auto shrink (if have >1 pool and low utilization)
+		if (poolCnt > 1 && stats.totalPoolSize > stats.poolSize) 
+		{
+			double utilization = (static_cast<double>(stats.allocated) / stats.totalPoolSize) * 100.0;
+			if (utilization < 10.0)
+				reclaimUnusedPools();
+		}
 	}
 
 	void MemoryAllocator::poolSize(size_t size)
