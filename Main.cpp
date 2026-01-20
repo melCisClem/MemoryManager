@@ -283,7 +283,7 @@ void runExtensiveExtensionTests() {
         }
         allocator.printStats();
         for (void* ptr : allocations) allocator.deallocate(ptr);
-        allocator.setMaxPools(32);
+        allocator.setMaxPools(128);
     }
 
     std::cout << "\n=== All Extension Tests Complete ===\n";
