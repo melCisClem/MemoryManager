@@ -163,7 +163,7 @@ namespace mem {
 		if (!block)
 		{
 #ifdef _DEBUG
-			std::cerr << "MemoryAllocator::allocate error > Allocation of " << size << " bytes failed. Out of memory.\n";
+			std::cerr << "MemoryAllocator::allocate error > Allocation of " << totalRequired << " bytes failed. Out of memory.\n";
 #endif
 			throw std::bad_alloc{};
 		}
@@ -179,7 +179,7 @@ namespace mem {
 
 #ifdef _DEBUG
 		std::cout << "Memory Manager: Allocated:" << block->size << " bytes (requested: "
-			<< totalSize << ", wasted: " << (block->size - totalSize) << ")\n";
+			<< totalRequired << ", wasted: " << (block->size - totalRequired) << ")\n";
 #endif
 
 		return (char*)block + alignedHeaderSize;
@@ -599,8 +599,10 @@ namespace mem {
 	{
 		int classIdx = getSizeClass(totalSize);
 
-		for (int i = classIdx; i < NUM_CLASSES; ++i) {
-			if (freeLists[i]) {
+		for (int i = classIdx; i < NUM_CLASSES; ++i) 
+		{
+			if (freeLists[i])
+			{
 				Block* block = freeLists[i];
 				if (block->size >= totalSize)
 					return block;

@@ -61,7 +61,7 @@ int main(void)
                 break;
 
             case 3:
-                runBenchmarkTests();
+                runPoolReclamationTest();
                 break;
 
             case 4:
@@ -69,16 +69,16 @@ int main(void)
                 break;
 
             case 5:
-                runPoolReclamationTest();
+                runBenchmarkTests();
                 break;
 
             case 6:
                 // Run all tests
                 std::cout << "\n\\n========== RUNNING ALL TESTS ==========\n\n";
-                runVerboseTest();
                 runSimpleExtensionTest();
                 runExtensiveExtensionTests();
                 runPoolReclamationTest();
+                runVerboseTest();
                 runBenchmarkTests();
                 std::cout << "\n\n========== ALL TESTS COMPLETE ==========\n\n";
                 break;
@@ -106,9 +106,9 @@ void printMenu() {
     std::cout << "╠═══════════════════════════════════════════════════════╣\n";
     std::cout << "║ 1. Simple Extension Test                             ║\n";
     std::cout << "║ 2. Extensive Extension Tests (All 7 Tests)           ║\n";
-    std::cout << "║ 3. Performance Benchmark (vs stdlib)                 ║\n";
+    std::cout << "║ 3. Pool Reclamation Test                             ║\n";
     std::cout << "║ 4. Verbose Debug Test                                ║\n";
-    std::cout << "║ 5. Pool Reclamation Test                             ║\n";
+    std::cout << "║ 5. Performance Benchmark (vs stdlib)                 ║\n";
     std::cout << "║ 6. Run ALL Tests                                     ║\n";
     std::cout << "║ 0. Exit                                               ║\n";
     std::cout << "╚═══════════════════════════════════════════════════════╝\n";
