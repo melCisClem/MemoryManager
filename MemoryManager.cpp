@@ -42,6 +42,7 @@ namespace mem {
 		void* poolStart = malloc(stats.poolSize);
 		if (!poolStart)
 			throw std::bad_alloc();
+
 		pools[0].start = poolStart;
 		pools[0].end = (char*)poolStart + stats.poolSize;
 		pools[0].size = stats.poolSize;
@@ -102,6 +103,13 @@ namespace mem {
 				block->size = blockSize;
 				block->isFree = true;
 				block->poolIdx = poolIdx;
+				block->next = nullptr;
+				block->prev = nullptr;
+
+				BlockFooter* footer = getFooter(block, blockSize);
+				footer->size = blockSize;
+				footer->isFree = true;
+
 				addToFreeList(block);
 				curr += blockSize;
 			}
@@ -109,7 +117,7 @@ namespace mem {
 
 		// handle remaining space
 		size_t remaining = (char*)poolEnd - curr;
-		if (remaining >= MIN_BLOCK_SIZE)
+		while (remaining >= MIN_BLOCK_SIZE)
 		{
 			size_t blockSize;
 			if (remaining >= MAX_BLOCK_SIZE * 2)
@@ -122,13 +130,14 @@ namespace mem {
 				blockSize = remaining;
 
 			Block* block = (Block*)curr;
-			block->size = remaining;
+			block->size = blockSize;
 			block->isFree = true;
 			block->poolIdx = poolIdx;
 			block->next = nullptr;
+			block->prev = nullptr;
 
-			BlockFooter* footer = getFooter(block, remaining);
-			footer->size = remaining;
+			BlockFooter* footer = getFooter(block, blockSize);
+			footer->size = blockSize;
 			footer->isFree = true;
 
 			addToFreeList(block);
@@ -136,7 +145,8 @@ namespace mem {
 			curr += blockSize;
 			remaining = (char*)poolEnd - curr;
 		}
-		else if (remaining > 0)
+
+		if (remaining > 0)
 			memset(curr, 0, remaining);
 	}
 
@@ -176,6 +186,8 @@ namespace mem {
 			removeFromFreeList(block);
 
 		block->isFree = false;
+		block->next = nullptr;
+		block->prev = nullptr;
 		BlockFooter* footer = getFooter(block, block->size);
 		footer->isFree = false;
 
@@ -220,6 +232,7 @@ namespace mem {
 
 		block->isFree = true;
 		block->next = nullptr;
+		block->prev = nullptr;
 
 		BlockFooter* footer = getFooter(block, block->size);
 		footer->isFree = true;
@@ -342,16 +355,27 @@ namespace mem {
 
 		for (int classIdx = 0; classIdx < NUM_CLASSES; ++classIdx)
 		{
-			Block** currPtr = &freeLists[classIdx];
-			while (*currPtr)
+			Block* curr = freeLists[classIdx];
+			Block* prev = nullptr;
+
+			while (curr)
 			{
-				Block* block = *currPtr;
-				int pIdx = getPoolIndex(block);
+				Block* next = curr->next;
+				int pIdx = getPoolIndex(curr);
 
 				if (pIdx != -1 && poolMarkedForDeletion[pIdx])
-					*currPtr = block->next;
+				{
+					if (prev)
+						prev->next = next;
+					else
+						freeLists[classIdx] = next;
+
+					if (next)
+						next->prev = prev;
+				}
 				else
-					currPtr = &(block->next);
+					prev = curr;
+				curr = next;
 			}
 		}
 
@@ -612,6 +636,15 @@ namespace mem {
 	{
 		int classIdx = getSizeClass(totalSize);
 
+		// find exact fit
+		if (freeLists[classIdx])
+		{
+			Block* block = freeLists[classIdx];
+			if (block->size >= totalSize)
+				return block;
+		}
+
+		// overflow use best fit
 		if (classIdx == OVERFLOW_CLASS)
 		{
 			Block* curr = freeLists[OVERFLOW_CLASS];
@@ -638,7 +671,8 @@ namespace mem {
 			return bestFit;
 		}
 
-		for (int i = classIdx; i < NUM_CLASSES; ++i)
+		// search larger
+		for (int i = classIdx + 1; i < NUM_CLASSES; ++i)
 		{
 			if (freeLists[i])
 			{
@@ -647,19 +681,19 @@ namespace mem {
 					return block;
 			}
 		}
+		
 		return nullptr;
 	}
 
 	void MemoryAllocator::removeFromFreeList(Block* block)
 	{
+#ifdef _DEBUG
 		if (!block || !isValidBlock(block))
 		{
-#ifdef _DEBUG
 			std::cerr << "MemoryAllocator::removeFromFreeList: Invalid block pointer!\n";
-#endif
 			throw std::bad_alloc{};
 		}
-
+#endif
 		if (!block->isFree)
 		{
 #ifdef _DEBUG
@@ -670,33 +704,16 @@ namespace mem {
 
 		int classIdx = getSizeClass(block->size);
 
-		if (freeLists[classIdx] == block) // if head
-		{
-			freeLists[classIdx] = block->next;
-			block->next = nullptr;
-			return;
-		}
+		if (block->prev)
+			block->prev->next = block->next;
+		else
+			freeLists[classIdx] = block->next; // Block was head
 
-		// else find prev node
-		Block* prev = freeLists[classIdx];
-		Block* curr = prev ? prev->next : nullptr;
+		if (block->next)
+			block->next->prev = block->prev;
 
-		while (curr)
-		{
-			if (curr == block)
-			{
-				prev->next = curr->next;
-				block->next = nullptr;
-				return;
-			}
-			prev = curr;
-			curr = curr->next;
-		}
-
-#ifdef _DEBUG
-		std::cerr << "MemoryAllocator::removeFromFreeList: Block not found in free list!\n";
-#endif
-		throw std::bad_alloc{};
+		block->next = nullptr;
+		block->prev = nullptr;
 	}
 
 	void MemoryAllocator::addToFreeList(Block* block)
@@ -710,7 +727,11 @@ namespace mem {
 		}
 
 		int classIdx = getSizeClass(block->size);
+		block->prev = nullptr;
 		block->next = freeLists[classIdx];
+
+		if (freeLists[classIdx])
+			freeLists[classIdx]->prev = block;
 		freeLists[classIdx] = block;
 	}
 
@@ -739,14 +760,19 @@ namespace mem {
 		Block* block = (Block*)ptr;
 		int hintIdx = block->poolIdx;
 
-		if (hintIdx >= 0 && hintIdx < poolCnt && pools[hintIdx].isActive)
-			if (ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
+		if (hintIdx >= 0 && hintIdx < poolCnt)
+			if (pools[hintIdx].isActive && ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
 				return true;
 
 		// fallback: search all pools
 		for (int i = 0; i < poolCnt; ++i)
+		{
+			if (!pools[i].isActive) 
+				continue;
+
 			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end)
 				return true;
+		}
 
 		return false;
 	}
@@ -760,7 +786,7 @@ namespace mem {
 #endif
 			return -1;
 		}
-		Block* block = (Block*)((char*)ptr - (HEADER_SIZE + 7 & ~7));
+		Block* block = (Block*)ptr;
 		int hintIdx = block->poolIdx;
 
 		// direct check (O(1))

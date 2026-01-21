@@ -28,6 +28,7 @@ namespace mem {
 	struct Block {
 		size_t size;
 		Block* next;
+		Block* prev;
 		int poolIdx; // to see which pool it belongs
 		bool isFree;
 	};
