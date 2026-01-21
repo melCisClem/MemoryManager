@@ -64,9 +64,10 @@ namespace mem {
 	// segregated free list
 	class MemoryAllocator {
 	private:
-		static const int NUM_CLASSES = 16;
+		static const int NUM_CLASSES = 22;
+		static const int OVERFLOW_CLASS = 21;
 		static const size_t MIN_BLOCK_SIZE = 64; // this cannot be less than overhead (40bytes)
-		static const size_t MAX_BLOCK_SIZE = 26214400; // 25mb
+		static const size_t MAX_BLOCK_SIZE = 8388608; // 8mb
 		static const size_t HEADER_SIZE = sizeof(Block);
 		static const size_t FOOTER_SIZE = sizeof(BlockFooter);
 		static const size_t OVERHEAD = HEADER_SIZE + FOOTER_SIZE;

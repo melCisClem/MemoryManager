@@ -84,10 +84,17 @@ namespace mem {
 		char* curr = (char*)poolStart;
 		char* poolEnd = (char*)poolStart + poolSize;
 
-		for (int classIdx = 0; classIdx < 12; ++classIdx)
+		for (int classIdx = 0; classIdx < OVERFLOW_CLASS; ++classIdx)
 		{
 			size_t blockSize = getClassSize(classIdx);
-			int numBlocks = (classIdx < 6) ? 100 : 20;
+			int numBlocks;
+			if (classIdx <= 3)       numBlocks = 300;
+			else if (classIdx <= 7)  numBlocks = 150;
+			else if (classIdx <= 10) numBlocks = 75;
+			else if (classIdx <= 13) numBlocks = 30;
+			else if (classIdx <= 16) numBlocks = 8;
+			else if (classIdx <= 19) numBlocks = 3;
+			else                     numBlocks = 1;
 
 			for (int i = 0; i < numBlocks && (curr + blockSize) <= poolEnd; ++i)
 			{
@@ -100,25 +107,20 @@ namespace mem {
 			}
 		}
 
-		// Carve ALL remaining space into largest blocks
-		size_t largestSize = getClassSize(NUM_CLASSES - 1);
-		while ((curr + largestSize) <= poolEnd) {
-			Block* block = (Block*)curr;
-			block->size = largestSize;
-			block->isFree = true;
-			block->poolIdx = poolIdx;
-
-			getFooter(block, largestSize)->size = largestSize;
-			getFooter(block, largestSize)->isFree = true;
-
-			addToFreeList(block);
-			curr += largestSize;
-		}
-
 		// handle remaining space
 		size_t remaining = (char*)poolEnd - curr;
 		if (remaining >= MIN_BLOCK_SIZE)
 		{
+			size_t blockSize;
+			if (remaining >= MAX_BLOCK_SIZE * 2)
+				blockSize = MAX_BLOCK_SIZE * 2;
+			else if (remaining >= MAX_BLOCK_SIZE)
+				blockSize = MAX_BLOCK_SIZE;
+			else if (remaining >= MAX_BLOCK_SIZE / 2)
+				blockSize = MAX_BLOCK_SIZE / 2;
+			else
+				blockSize = remaining;
+
 			Block* block = (Block*)curr;
 			block->size = remaining;
 			block->isFree = true;
@@ -130,6 +132,9 @@ namespace mem {
 			footer->isFree = true;
 
 			addToFreeList(block);
+
+			curr += blockSize;
+			remaining = (char*)poolEnd - curr;
 		}
 		else if (remaining > 0)
 			memset(curr, 0, remaining);
@@ -243,13 +248,11 @@ namespace mem {
 				return false;
 			}
 		}
-		
-		size_t largestBlock = getClassSize(NUM_CLASSES - 1);
-		size_t newPoolSize;
 
+		size_t newPoolSize;
 		if (additionalSize > 0)
 		{
-			size_t buffer = 15 * 1024 * 1024; 
+			size_t buffer = 15 * 1024 * 1024;
 			newPoolSize = additionalSize + buffer + (OVERHEAD * 100);
 		}
 		else
@@ -272,7 +275,7 @@ namespace mem {
 		}
 
 		int newPoolIdx = -1;
-		for (int i = 0; i < poolCnt; ++i) 
+		for (int i = 0; i < poolCnt; ++i)
 		{
 			if (!pools[i].isActive)
 			{
@@ -281,9 +284,9 @@ namespace mem {
 			}
 		}
 
-		if (newPoolIdx == -1) 
+		if (newPoolIdx == -1)
 		{
-			if (poolCnt < maxPools) 
+			if (poolCnt < maxPools)
 				newPoolIdx = poolCnt++;
 			else return false;
 		}
@@ -346,13 +349,9 @@ namespace mem {
 				int pIdx = getPoolIndex(block);
 
 				if (pIdx != -1 && poolMarkedForDeletion[pIdx])
-				{
 					*currPtr = block->next;
-				}
 				else
-				{
 					currPtr = &(block->next);
-				}
 			}
 		}
 
@@ -397,7 +396,7 @@ namespace mem {
 
 			while ((void*)current < poolEnd)
 			{
-				if (current->size == 0 || !current->isFree) 
+				if (current->size == 0 || !current->isFree)
 				{
 					poolIsEmpty = false;
 					break;
@@ -498,10 +497,16 @@ namespace mem {
 				curr = curr->next;
 			}
 
-			if (count > 0) {
-				std::cout << "  Class " << i << " (~" << getClassSize(i)
-					<< " bytes): " << count << " blocks, "
-					<< totalFree << " bytes\n";
+			if (count > 0)
+			{
+				size_t classSize = getClassSize(i);
+				std::cout << "  Class " << i;
+				if (classSize != 0)
+					std::cout << " (~" << getClassSize(i) << " bytes): ";
+				else
+					std::cout << " (Variable Overflow): ";
+
+				std::cout << count << " blocks, " << totalFree << " bytes\n";
 			}
 		}
 		std::cout << "--------------------------------------------------------\n";
@@ -553,21 +558,28 @@ namespace mem {
 
 	int MemoryAllocator::getSizeClass(size_t size)
 	{
-		if (size <= 64) return 0;
-		if (size <= 128) return 1;
-		if (size <= 256) return 2;
-		if (size <= 512) return 3;
-		if (size <= 1024) return 4;
-		if (size <= 2048) return 5;
-		if (size <= 4096) return 6;
-		if (size <= 8192) return 7;
-		if (size <= 16384) return 8;
-		if (size <= 32768) return 9;
-		if (size <= 65536) return 10;
-		if (size <= 131072) return 11; // 128KB
-		if (size <= 1048576) return 12; // 1MB
-		if (size <= 10485760) return 13; // 10MB
-		return 14; // 25MB
+		if (size <= 64)      return 0;
+		if (size <= 128)     return 1;
+		if (size <= 256)     return 2;
+		if (size <= 512)     return 3;
+		if (size <= 1024)    return 4;
+		if (size <= 2048)    return 5;
+		if (size <= 4096)    return 6;
+		if (size <= 8192)    return 7;
+		if (size <= 16384)   return 8;
+		if (size <= 24576)   return 9;
+		if (size <= 32768)   return 10;
+		if (size <= 65536)   return 11;
+		if (size <= 131072)  return 12;
+		if (size <= 262144)  return 13;
+		if (size <= 524288)  return 14;
+		if (size <= 786432)  return 15;
+		if (size <= 1048576) return 16;
+		if (size <= 2097152) return 17;  // 2MB
+		if (size <= 3145728) return 18;  // 2MB
+		if (size <= 4194304) return 19;  // 4MB
+		if (size <= 8388608) return 20;  // 8MB
+		return OVERFLOW_CLASS;
 	}
 
 	size_t MemoryAllocator::getClassSize(int classIdx)
@@ -581,19 +593,52 @@ namespace mem {
 		if (classIdx == 6) return 4096;
 		if (classIdx == 7) return 8192;
 		if (classIdx == 8) return 16384;
-		if (classIdx == 9) return 32768;
-		if (classIdx == 10) return 65536;
-		if (classIdx == 11) return 131072; // 128KB
-		if (classIdx == 12) return 1048576; // 1MB
-		if (classIdx == 13) return 10485760; // 10MB
-		return 26214400; // 25MB
+		if (classIdx == 9)  return 24576;
+		if (classIdx == 10) return 32768;
+		if (classIdx == 11) return 65536;
+		if (classIdx == 12) return 131072; // 128KB
+		if (classIdx == 13) return 262144;
+		if (classIdx == 14) return 524288;
+		if (classIdx == 15) return 786432;
+		if (classIdx == 16) return 1048576; // 1MB
+		if (classIdx == 17) return 2097152;
+		if (classIdx == 18) return 3145728;
+		if (classIdx == 19) return 4194304; // 4MB
+		if (classIdx == 20) return 8388608;
+		return 0;
 	}
 
 	Block* MemoryAllocator::findBlock(size_t totalSize)
 	{
 		int classIdx = getSizeClass(totalSize);
 
-		for (int i = classIdx; i < NUM_CLASSES; ++i) 
+		if (classIdx == OVERFLOW_CLASS)
+		{
+			Block* curr = freeLists[OVERFLOW_CLASS];
+			Block* bestFit = nullptr;
+			size_t bestFitWaste = SIZE_MAX;
+
+			while (curr)
+			{
+				if (curr->size >= totalSize)
+				{
+					size_t waste = curr->size - totalSize;
+					if (waste < bestFitWaste)
+					{
+						bestFit = curr;
+						bestFitWaste = waste;
+
+						if (waste == 0)
+							break;
+					}
+				}
+				curr = curr->next;
+			}
+
+			return bestFit;
+		}
+
+		for (int i = classIdx; i < NUM_CLASSES; ++i)
 		{
 			if (freeLists[i])
 			{
@@ -694,13 +739,13 @@ namespace mem {
 		Block* block = (Block*)ptr;
 		int hintIdx = block->poolIdx;
 
-		if (hintIdx >= 0 && hintIdx < poolCnt && pools[hintIdx].isActive) 
+		if (hintIdx >= 0 && hintIdx < poolCnt && pools[hintIdx].isActive)
 			if (ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
 				return true;
 
 		// fallback: search all pools
-		for (int i = 0; i < poolCnt; ++i) 
-			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end) 
+		for (int i = 0; i < poolCnt; ++i)
+			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end)
 				return true;
 
 		return false;
