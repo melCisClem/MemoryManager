@@ -109,11 +109,11 @@ namespace mem {
 		{
 			size_t blockSize = getClassSize(classIdx);
 			int numBlocks;
-			if (classIdx <= 3)       numBlocks = 500;
-			else if (classIdx <= 7)  numBlocks = 200;
-			else if (classIdx <= 10) numBlocks = 50;
-			else if (classIdx <= 13) numBlocks = 20;
-			else if (classIdx <= 16) numBlocks = 5;
+			if (classIdx <= 3)       numBlocks = 10000;
+			else if (classIdx <= 7)  numBlocks = 1000;
+			else if (classIdx <= 10) numBlocks = 150;
+			else if (classIdx <= 13) numBlocks = 50;
+			else if (classIdx <= 16) numBlocks = 4;
 			else if (classIdx <= 19) numBlocks = 2;
 			else                     numBlocks = 1;
 
