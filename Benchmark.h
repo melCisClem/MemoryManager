@@ -12,6 +12,7 @@
 #include <vector>
 #include <random>
 #include <iomanip>
+#include <iostream>
 
 
 namespace mem {

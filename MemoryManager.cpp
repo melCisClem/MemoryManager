@@ -1,58 +1,70 @@
-#include "MemoryManager.h"
+#include "memoryManager.h"
 #include <exception>
 #include <iostream>
 #include <cstdlib>
 
-#define NOMINMAX
-#include <windows.h>
-
-size_t getAvailableMemory()
-{
-#ifdef _WIN32
-	MEMORYSTATUSEX status;
-	status.dwLength = sizeof(status);
-	GlobalMemoryStatusEx(&status);
-	return static_cast<size_t>(status.ullAvailPhys);
-#else
-	return 0;
-#endif
-}
-
 namespace mem {
 
-	MemoryAllocator::MemoryAllocator(size_t requestedSize = 0)
+	/**
+	* @brief ctor
+	* @param size_t requestedSize
+	*/
+	MemoryAllocator::MemoryAllocator(size_t requestedSize)
 		: poolCnt(0), maxPools(MAX_POOLS), stats{}, autoExtend(true), extensionSize(0)
 	{
-		size_t availableMem = getAvailableMemory();
 		size_t defaultPoolSize;
 
 		if (requestedSize > 0)
 			defaultPoolSize = requestedSize;
 		else
-			defaultPoolSize = static_cast<size_t>(availableMem * 0.00001); // 0.00001% of available system ram
+			defaultPoolSize = 100 * 1024 * 1024; // 100 MB
 
-		size_t minPoolSize = 100 * 1024 * 1024; // 100 MB
-
-		stats.poolSize = std::max(minPoolSize, defaultPoolSize);
-		stats.totalPoolSize = stats.poolSize;
+		stats.poolSize = (defaultPoolSize + POOL_ALIGNMENT - 1) & ~(POOL_ALIGNMENT - 1);
+		stats.totalPoolSize = 0;
 
 		memset(freeLists, 0, sizeof(freeLists));
 		memset(pools, 0, sizeof(pools));
 
-		void* poolStart = malloc(stats.poolSize);
-		if (!poolStart)
-			throw std::bad_alloc();
+		// 1 extra pool for overhead so less perf hit when extending
+		const int initialPoolCount = 2;
+		for (int i = 0; i < initialPoolCount; ++i)
+		{
+			//void* poolStart = malloc(stats.poolSize);
+			void* poolStart = _aligned_malloc(stats.poolSize, POOL_ALIGNMENT);
+			if (!poolStart)
+			{
+				for (int j = 0; j < i; ++j)
+					_aligned_free(pools[j].start);
 
-		pools[0].start = poolStart;
-		pools[0].end = (char*)poolStart + stats.poolSize;
-		pools[0].size = stats.poolSize;
-		pools[0].isExtension = false;
-		pools[0].isActive = true;
-		poolCnt = 1;
+				throw std::bad_alloc();
+			}
 
-		initializeSegregatedLists(poolStart, stats.poolSize, 0);
+			pools[i].start = poolStart;
+			pools[i].end = (char*)poolStart + stats.poolSize;
+			pools[i].size = stats.poolSize;
+			pools[i].isExtension = false;
+			pools[i].isActive = true;
+
+			stats.totalPoolSize += stats.poolSize;
+			poolCnt++;
+
+			initializeSegregatedLists(poolStart, stats.poolSize, i);
+
+#ifdef _DEBUG
+			uintptr_t addr = (uintptr_t)poolStart;
+			bool isPageAligned = (addr % 4096) == 0;
+			bool isCacheAligned = (addr % 64) == 0;
+
+			std::cout << "Pool " << i << ": " << poolStart
+				<< " (Page aligned: " << (isPageAligned ? "YES" : "NO")
+				<< ", Cache aligned: " << (isCacheAligned ? "YES" : "NO") << ")\n";
+#endif
+		}
 	}
 
+	/**
+	* @brief dtor
+	*/
 	MemoryAllocator::~MemoryAllocator(void)
 	{
 #ifdef _DEBUG
@@ -66,20 +78,28 @@ namespace mem {
 		for (int i = 0; i < poolCnt; ++i)
 			if (pools[i].isActive)
 			{
-				free(pools[i].start);
+				_aligned_free(pools[i].start);
 				pools[i].isActive = false;
 				pools[i].start = nullptr;
 				pools[i].end = nullptr;
 			}
 	}
 
+	/**
+	* @brief get singleton instance of memory allocator
+	* @return MemoryAllocator&
+	*/
 	MemoryAllocator& MemoryAllocator::GetInstance()
 	{
 		static MemoryAllocator instance;
 		return instance;
 	}
 
-	// cutting the free list up
+	/**
+	* @brief size up the list into blocks
+	* @param void* poolStart, size_t poolSize, int poolIdx
+	* @return void
+	*/
 	void MemoryAllocator::initializeSegregatedLists(void* poolStart, size_t poolSize, int poolIdx)
 	{
 		char* curr = (char*)poolStart;
@@ -89,12 +109,12 @@ namespace mem {
 		{
 			size_t blockSize = getClassSize(classIdx);
 			int numBlocks;
-			if (classIdx <= 3)       numBlocks = 300;
-			else if (classIdx <= 7)  numBlocks = 150;
-			else if (classIdx <= 10) numBlocks = 75;
-			else if (classIdx <= 13) numBlocks = 30;
-			else if (classIdx <= 16) numBlocks = 8;
-			else if (classIdx <= 19) numBlocks = 3;
+			if (classIdx <= 3)       numBlocks = 500;
+			else if (classIdx <= 7)  numBlocks = 200;
+			else if (classIdx <= 10) numBlocks = 50;
+			else if (classIdx <= 13) numBlocks = 20;
+			else if (classIdx <= 16) numBlocks = 5;
+			else if (classIdx <= 19) numBlocks = 2;
 			else                     numBlocks = 1;
 
 			for (int i = 0; i < numBlocks && (curr + blockSize) <= poolEnd; ++i)
@@ -105,10 +125,6 @@ namespace mem {
 				block->poolIdx = poolIdx;
 				block->next = nullptr;
 				block->prev = nullptr;
-
-				BlockFooter* footer = getFooter(block, blockSize);
-				footer->size = blockSize;
-				footer->isFree = true;
 
 				addToFreeList(block);
 				curr += blockSize;
@@ -136,10 +152,6 @@ namespace mem {
 			block->next = nullptr;
 			block->prev = nullptr;
 
-			BlockFooter* footer = getFooter(block, blockSize);
-			footer->size = blockSize;
-			footer->isFree = true;
-
 			addToFreeList(block);
 
 			curr += blockSize;
@@ -150,7 +162,12 @@ namespace mem {
 			memset(curr, 0, remaining);
 	}
 
-	void* MemoryAllocator::allocate(size_t size)
+	/**
+	* @brief allocate memory
+	* @param size_t size
+	* @return void*
+	*/
+	void* MemoryAllocator::allocate(size_t size, bool print)
 	{
 		if (!size)
 		{
@@ -161,9 +178,7 @@ namespace mem {
 		}
 
 		size_t alignedHeaderSize = (HEADER_SIZE + 7) & ~7;
-		size_t alignedFooterSize = (FOOTER_SIZE + 7) & ~7;
-
-		size_t totalRequired = size + alignedHeaderSize + alignedFooterSize;
+		size_t totalRequired = size + alignedHeaderSize;
 		totalRequired = (totalRequired + 7) & ~7; // 8-byte block alignment
 
 		Block* block = findBlock(totalRequired);
@@ -188,20 +203,26 @@ namespace mem {
 		block->isFree = false;
 		block->next = nullptr;
 		block->prev = nullptr;
-		BlockFooter* footer = getFooter(block, block->size);
-		footer->isFree = false;
 
 		stats.allocated += block->size;
 		stats.totalAllocations++;
 
+		if (print)
+		{
 #ifdef _DEBUG
-		std::cout << "Memory Manager: Allocated:" << block->size << " bytes (requested: "
-			<< totalRequired << ", wasted: " << (block->size - totalRequired) << ")\n";
+			std::cout << "Memory Manager: Allocated:" << block->size << " bytes (requested: "
+				<< totalRequired << ", wasted: " << (block->size - totalRequired) << ")\n";
 #endif
+		}
 
 		return (char*)block + alignedHeaderSize;
 	}
 
+	/**
+	* @brief deallocate memory
+	* @param void* obj
+	* @return void
+	*/
 	void MemoryAllocator::deallocate(void* obj)
 	{
 		if (!obj)
@@ -234,20 +255,17 @@ namespace mem {
 		block->next = nullptr;
 		block->prev = nullptr;
 
-		BlockFooter* footer = getFooter(block, block->size);
-		footer->isFree = true;
-
 		stats.allocated -= block->size;
 		stats.totalDeallocations++;
 
 		addToFreeList(block);
 	}
 
-	void MemoryAllocator::poolSize(size_t size)
-	{
-		stats.poolSize = size;
-	}
-
+	/**
+	* @brief extends the memory pool
+	* @param size_t additionalSize
+	* @return bool
+	*/
 	bool MemoryAllocator::extendPool(size_t additionalSize)
 	{
 		if (poolCnt >= maxPools)
@@ -266,7 +284,7 @@ namespace mem {
 		if (additionalSize > 0)
 		{
 			size_t buffer = 15 * 1024 * 1024;
-			newPoolSize = additionalSize + buffer + (OVERHEAD * 100);
+			newPoolSize = additionalSize + buffer;
 		}
 		else
 		{
@@ -278,7 +296,7 @@ namespace mem {
 		// align with min block size
 		newPoolSize = (newPoolSize + MIN_BLOCK_SIZE - 1) & ~(MIN_BLOCK_SIZE - 1);
 
-		void* newPool = malloc(newPoolSize);
+		void* newPool = _aligned_malloc(newPoolSize, POOL_ALIGNMENT);
 		if (!newPool)
 		{
 #ifdef _DEBUG
@@ -322,6 +340,10 @@ namespace mem {
 		return true;
 	}
 
+	/**
+	* @brief reclaims pools that arent used/empty
+	* @return size_t
+	*/
 	size_t MemoryAllocator::reclaimUnusedPools()
 	{
 		size_t reclaimedTotal = 0;
@@ -386,7 +408,7 @@ namespace mem {
 				reclaimedTotal += pools[i].size;
 				reclaimedPoolCount++;
 
-				free(pools[i].start);
+				_aligned_free(pools[i].start);
 				pools[i].isActive = false;
 				pools[i].start = nullptr;
 				pools[i].end = nullptr;
@@ -404,6 +426,10 @@ namespace mem {
 		return reclaimedTotal;
 	}
 
+	/**
+	* @brief const func calcs reclaimable memory
+	* @return size_t
+	*/
 	size_t MemoryAllocator::getReclaimableMemory() const
 	{
 		size_t reclaimable = 0;
@@ -437,6 +463,10 @@ namespace mem {
 		return reclaimable;
 	}
 
+	/**
+	* @brief const func calcs num of reclaimable pools
+	* @return int
+	*/
 	int MemoryAllocator::getReclaimablePoolCount() const
 	{
 		int cnt = 0;
@@ -469,11 +499,14 @@ namespace mem {
 		return cnt;
 	}
 
+	/**
+	* @brief prints stats abt memory pool
+	*/
 	void MemoryAllocator::printStats(void)
 	{
 		std::cout << "\n\n------------- Memory Pool Statistics -------------------\n";
-		std::cout << "  Initial pool size: " << stats.poolSize << " bytes\n";
-		std::cout << "  Total pool size: " << stats.totalPoolSize << " bytes\n";
+		std::cout << "  Initial pool size: " << stats.poolSize << " bytes (" << stats.poolSize / (1024 * 1024) << " MB)\n";
+		std::cout << "  Total pool size: " << stats.totalPoolSize << " bytes (" << stats.totalPoolSize / (1024 * 1024) << " MB)\n";
 		std::cout << "  Pool total extensions: " << stats.extensionCount << "\n";
 		std::cout << "  Pool active extensions: " << stats.activeExtensions << "\n";
 
@@ -483,8 +516,8 @@ namespace mem {
 		else
 			std::cout << "\n";
 
-		std::cout << "  Allocated: " << stats.allocated << " bytes\n";
-		std::cout << "  Free: " << (stats.totalPoolSize - stats.allocated) << " bytes\n";
+		std::cout << "  Allocated: " << stats.allocated << " bytes (" << stats.allocated / (1024 * 1024) << " MB)\n";
+		std::cout << "  Free: " << (stats.totalPoolSize - stats.allocated) << " bytes (" << (stats.totalPoolSize - stats.allocated) / (1024 * 1024) << " MB)\n";
 
 		if (stats.totalPoolSize > 0) {
 			double utilization = (stats.allocated * 100.0) / stats.totalPoolSize;
@@ -536,6 +569,9 @@ namespace mem {
 		std::cout << "--------------------------------------------------------\n";
 	}
 
+	/**
+	* @brief const func to check for mem leaks
+	*/
 	void MemoryAllocator::checkForLeaks() const
 	{
 		std::cout << "\n=== Memory Leak Report ===\n";
@@ -580,32 +616,11 @@ namespace mem {
 		std::cout << "============================\n\n";
 	}
 
-	int MemoryAllocator::getSizeClass(size_t size)
-	{
-		if (size <= 64)      return 0;
-		if (size <= 128)     return 1;
-		if (size <= 256)     return 2;
-		if (size <= 512)     return 3;
-		if (size <= 1024)    return 4;
-		if (size <= 2048)    return 5;
-		if (size <= 4096)    return 6;
-		if (size <= 8192)    return 7;
-		if (size <= 16384)   return 8;
-		if (size <= 24576)   return 9;
-		if (size <= 32768)   return 10;
-		if (size <= 65536)   return 11;
-		if (size <= 131072)  return 12;
-		if (size <= 262144)  return 13;
-		if (size <= 524288)  return 14;
-		if (size <= 786432)  return 15;
-		if (size <= 1048576) return 16;
-		if (size <= 2097152) return 17;  // 2MB
-		if (size <= 3145728) return 18;  // 2MB
-		if (size <= 4194304) return 19;  // 4MB
-		if (size <= 8388608) return 20;  // 8MB
-		return OVERFLOW_CLASS;
-	}
-
+	/**
+	* @brief get size class given class idx
+	* @param int class idx
+	* @return size_t
+	*/
 	size_t MemoryAllocator::getClassSize(int classIdx)
 	{
 		if (classIdx == 0) return 64;
@@ -620,29 +635,34 @@ namespace mem {
 		if (classIdx == 9)  return 24576;
 		if (classIdx == 10) return 32768;
 		if (classIdx == 11) return 65536;
-		if (classIdx == 12) return 131072; // 128KB
+		if (classIdx == 12) return 131072;
 		if (classIdx == 13) return 262144;
 		if (classIdx == 14) return 524288;
 		if (classIdx == 15) return 786432;
-		if (classIdx == 16) return 1048576; // 1MB
+		if (classIdx == 16) return 1048576;
 		if (classIdx == 17) return 2097152;
 		if (classIdx == 18) return 3145728;
-		if (classIdx == 19) return 4194304; // 4MB
+		if (classIdx == 19) return 4194304;
 		if (classIdx == 20) return 8388608;
 		return 0;
 	}
 
+	/**
+	* @brief search for suitable memory block given size of allocation
+	* @param size_t totalsize
+	* @return Block*
+	*/
 	Block* MemoryAllocator::findBlock(size_t totalSize)
 	{
 		int classIdx = getSizeClass(totalSize);
 
 		// find exact fit
-		if (freeLists[classIdx])
-		{
-			Block* block = freeLists[classIdx];
-			if (block->size >= totalSize)
-				return block;
-		}
+		//if (freeLists[classIdx])
+		//{
+		Block* currBlk = freeLists[classIdx];
+		if (currBlk && currBlk->size >= totalSize)
+			return currBlk;
+		//}
 
 		// overflow use best fit
 		if (classIdx == OVERFLOW_CLASS)
@@ -656,13 +676,13 @@ namespace mem {
 				if (curr->size >= totalSize)
 				{
 					size_t waste = curr->size - totalSize;
+					if (waste == 0)
+						return curr; // perfect fit
+
 					if (waste < bestFitWaste)
 					{
 						bestFit = curr;
 						bestFitWaste = waste;
-
-						if (waste == 0)
-							break;
 					}
 				}
 				curr = curr->next;
@@ -671,7 +691,7 @@ namespace mem {
 			return bestFit;
 		}
 
-		// search larger
+		// search for larger
 		for (int i = classIdx + 1; i < NUM_CLASSES; ++i)
 		{
 			if (freeLists[i])
@@ -681,10 +701,14 @@ namespace mem {
 					return block;
 			}
 		}
-		
+
 		return nullptr;
 	}
 
+	/**
+	* @brief removes block from free list
+	* @param Block* block
+	*/
 	void MemoryAllocator::removeFromFreeList(Block* block)
 	{
 #ifdef _DEBUG
@@ -716,6 +740,10 @@ namespace mem {
 		block->prev = nullptr;
 	}
 
+	/**
+	* @brief add block to free list
+	* @param Block* block
+	*/
 	void MemoryAllocator::addToFreeList(Block* block)
 	{
 		if (!block || !isValidBlock(block))
@@ -735,11 +763,11 @@ namespace mem {
 		freeLists[classIdx] = block;
 	}
 
-	BlockFooter* MemoryAllocator::getFooter(void* blockStart, size_t blockSize)
-	{
-		return (BlockFooter*)((char*)blockStart + blockSize - FOOTER_SIZE);
-	}
-
+	/**
+	* @brief get next block
+	* @param Block* block
+	* @return Block*
+	*/
 	Block* MemoryAllocator::getNextBlock(Block* block)
 	{
 		Block* nextBlock = (Block*)((char*)block + block->size);
@@ -753,30 +781,45 @@ namespace mem {
 		return nextBlock;
 	}
 
+	/**
+	* @brief checks if given block ptr is valid
+	* @param void* ptr
+	* @return bool
+	*/
 	bool MemoryAllocator::isValidBlock(void* ptr)
 	{
-		if (!ptr) return false;
+		if (!ptr)
+			return false;
 
 		Block* block = (Block*)ptr;
 		int hintIdx = block->poolIdx;
 
+		// direct check (O(1))
 		if (hintIdx >= 0 && hintIdx < poolCnt)
-			if (pools[hintIdx].isActive && ptr >= pools[hintIdx].start && ptr < pools[hintIdx].end)
+		{
+			MemoryPool const& pool = pools[hintIdx];
+			if (pool.isActive && ptr >= pool.start && ptr < pool.end)
 				return true;
+		}
 
-		// fallback: search all pools
+		// fallback: search all pools (O(n))
 		for (int i = 0; i < poolCnt; ++i)
 		{
-			if (!pools[i].isActive) 
+			if (!pools[i].isActive)
 				continue;
 
-			if (pools[i].isActive && ptr >= pools[i].start && ptr < pools[i].end)
+			if (ptr >= pools[i].start && ptr < pools[i].end)
 				return true;
 		}
 
 		return false;
 	}
 
+	/**
+	* @brief get idx of pool
+	* @param void* ptr
+	* @return int
+	*/
 	int MemoryAllocator::getPoolIndex(void* ptr)
 	{
 		if (!ptr)

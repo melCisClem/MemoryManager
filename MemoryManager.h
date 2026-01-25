@@ -1,7 +1,4 @@
 #pragma once
-//#pragma pack(1)  <- if wan to mess ard with packing
-
-#include <iostream>
 
 #define UseCPPMemManager_ true
 
@@ -29,12 +26,7 @@ namespace mem {
 		size_t size;
 		Block* next;
 		Block* prev;
-		int poolIdx; // to see which pool it belongs
-		bool isFree;
-	};
-
-	struct BlockFooter {
-		size_t size;
+		int poolIdx;
 		bool isFree;
 	};
 
@@ -65,17 +57,16 @@ namespace mem {
 	// segregated free list
 	class MemoryAllocator {
 	private:
+		static const size_t POOL_ALIGNMENT = 4096;
 		static const int NUM_CLASSES = 22;
 		static const int OVERFLOW_CLASS = 21;
 		static const size_t MIN_BLOCK_SIZE = 64; // this cannot be less than overhead (40bytes)
 		static const size_t MAX_BLOCK_SIZE = 8388608; // 8mb
 		static const size_t HEADER_SIZE = sizeof(Block);
-		static const size_t FOOTER_SIZE = sizeof(BlockFooter);
-		static const size_t OVERHEAD = HEADER_SIZE + FOOTER_SIZE;
 		static const int MAX_POOLS = 128;
 
 	public:
-		MemoryAllocator(size_t requestedSize);
+		MemoryAllocator(size_t requestedSize = 0);
 		MemoryAllocator(MemoryAllocator const&) = delete;
 		MemoryAllocator& operator=(MemoryAllocator const&) = delete;
 		~MemoryAllocator(void);
@@ -84,10 +75,9 @@ namespace mem {
 
 		void initializeSegregatedLists(void* poolStart, size_t poolSize, int poolIdx);
 
-		void* allocate(size_t size);
+		void* allocate(size_t size, bool print = true);
 		void deallocate(void* obj);
 
-		void poolSize(size_t); // to modify pool size
 		void setAutoExtender(bool enable) { autoExtend = enable; }
 		void setExtensionSize(size_t size) { extensionSize = size; }
 		void setMaxPools(int max) { maxPools = (max <= MAX_POOLS) ? max : MAX_POOLS; }
@@ -108,7 +98,6 @@ namespace mem {
 		void removeFromFreeList(Block* block);
 		void addToFreeList(Block* block);
 
-		BlockFooter* getFooter(void* blockStart, size_t blockSize);
 		Block* getNextBlock(Block* block);
 		bool isValidBlock(void* ptr);
 		int getPoolIndex(void* ptr);
@@ -123,5 +112,43 @@ namespace mem {
 		bool autoExtend;
 		size_t extensionSize; // default is 0
 	};
+
+
+	/**
+	* @brief get class idx given size of class
+	* @param size_t size
+	* @return int
+	*/
+	inline int MemoryAllocator::getSizeClass(size_t size)
+	{
+		// common sizes
+		if (size <= 512)
+		{
+			if (size <= 64)  return 0;
+			if (size <= 128) return 1;
+			if (size <= 256) return 2;
+			return 3;
+		}
+
+		// Less common sizes
+		if (size <= 1024)    return 4;
+		if (size <= 2048)    return 5;
+		if (size <= 4096)    return 6;
+		if (size <= 8192)    return 7;
+		if (size <= 16384)   return 8;
+		if (size <= 24576)   return 9;
+		if (size <= 32768)   return 10;
+		if (size <= 65536)   return 11;
+		if (size <= 131072)  return 12;
+		if (size <= 262144)  return 13;
+		if (size <= 524288)  return 14;
+		if (size <= 786432)  return 15;
+		if (size <= 1048576) return 16;
+		if (size <= 2097152) return 17;
+		if (size <= 3145728) return 18;
+		if (size <= 4194304) return 19;
+		if (size <= 8388608) return 20;
+		return OVERFLOW_CLASS;
+	}
 
 }
